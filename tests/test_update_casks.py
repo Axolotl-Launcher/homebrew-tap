@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -42,6 +43,97 @@ class UpdaterTests(unittest.TestCase):
         self.path = self.root / "Casks/sample.rb"
         self.path.write_text(SOURCE)
         (self.root / "README.md").write_text(README)
+
+    def test_subprocess_deadline_and_literal_arguments(self):
+        with patch.object(subprocess, "check_output", return_value="ok") as execute:
+            self.assertEqual(u.run("tool", "argument"), "ok")
+            execute.assert_called_once_with(("tool", "argument"), text=True, timeout=600)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            u.run(sys.executable, "-c", "import time; time.sleep(5)", timeout=0.02)
+        marker = self.root / "should-not-exist"
+        payload = f"; touch {marker}; $(touch {marker})"
+        result = u.run(sys.executable, "-c", "import sys; print(sys.argv[1])", payload)
+        self.assertEqual(result.strip(), payload)
+        self.assertFalse(marker.exists())
+
+    def proposal_git(self, *args):
+        self.assertEqual(args[0], "git", "Publishing must not invoke Homebrew or Cask Ruby")
+        if "rev-parse" in args:
+            return "base\n"
+        if "ls-files" in args:
+            return "Casks/sample.rb\x00README.md\x00"
+        if "diff" in args:
+            return "Casks/sample.rb\x00"
+        raise AssertionError(args)
+
+    def make_proposal(self):
+        proposal = self.root / "proposal"
+        new_source = SOURCE.replace('version "1.0.0"', 'version "1.1.0"')
+        self.path.write_text(new_source)
+        with patch.object(u, "run", side_effect=self.proposal_git):
+            u.export_proposal(self.root, proposal)
+        self.path.write_text(SOURCE)
+        return proposal, new_source
+
+    def test_export_apply_and_verify_without_cask_execution(self):
+        proposal, new_source = self.make_proposal()
+        with patch.object(u, "run", side_effect=self.proposal_git):
+            u.apply_proposal(self.root, proposal)
+            self.assertEqual(self.path.read_text(), new_source)
+            self.assertEqual((self.root / "README.md").read_text(), README)
+            u.verify(self.root, proposal / "manifest.json")
+
+    def test_empty_proposal_is_a_noop(self):
+        proposal = self.root / "proposal"
+        def fake_git(*args):
+            if "diff" in args:
+                return ""
+            return self.proposal_git(*args)
+        with patch.object(u, "run", side_effect=fake_git):
+            u.export_proposal(self.root, proposal)
+            self.assertEqual([p.name for p in proposal.iterdir()], ["manifest.json"])
+            u.apply_proposal(self.root, proposal)
+        self.assertEqual(self.path.read_text(), SOURCE)
+
+    def test_proposal_rejects_injection_tampering_base_and_modes(self):
+        proposal, new_source = self.make_proposal()
+        manifest = proposal / "manifest.json"
+        expected = json.loads(manifest.read_text())
+        cases = [
+            dict(expected, base="other-base"),
+            dict(expected, changes=["scripts/update_casks.py"]),
+            dict(expected, changes=["../escape.rb"]),
+            dict(expected, changes=["Casks/sample.rb"] * 2),
+        ]
+        for changed_name in ("Casks/sample.rb", "README.md"):
+            changed = copy.deepcopy(expected)
+            changed["files"][changed_name][0] = "b" * 64
+            cases.append(changed)
+        changed = copy.deepcopy(expected)
+        changed["files"]["Casks/sample.rb"][1] = True
+        cases.append(changed)
+        with patch.object(u, "run", side_effect=self.proposal_git):
+            for case in cases:
+                manifest.write_text(json.dumps(case))
+                with self.subTest(case=case), self.assertRaises(ValueError):
+                    u.apply_proposal(self.root, proposal)
+                self.assertEqual(self.path.read_text(), SOURCE)
+            manifest.write_text(json.dumps(expected))
+            injected = proposal / "injected.py"
+            injected.write_text("must not be copied or executed")
+            with self.assertRaises(ValueError):
+                u.apply_proposal(self.root, proposal)
+            injected.unlink()
+            asset = proposal / "Casks/sample.rb"
+            asset.write_text("tampered")
+            with self.assertRaises(ValueError):
+                u.apply_proposal(self.root, proposal)
+            asset.unlink()
+            asset.symlink_to(self.path)
+            with self.assertRaises(ValueError):
+                u.apply_proposal(self.root, proposal)
+            self.assertEqual(self.path.read_text(), SOURCE)
+            self.assertEqual((self.root / "README.md").read_text(), README)
 
     def test_release_url_formats(self):
         for tag in ("1.2.3", "v1.2.3", "release-1.2.3"):
@@ -109,7 +201,7 @@ class UpdaterTests(unittest.TestCase):
                 download.assert_called_once_with(new["url"], repository, tag)
 
     def test_parse_error_and_interrupt_restore_original(self):
-        for error in (RuntimeError("parse failed"), KeyboardInterrupt(), SystemExit(143)):
+        for error in (RuntimeError("parse failed"), subprocess.TimeoutExpired("brew", 600), KeyboardInterrupt(), SystemExit(143)):
             with patch.object(u, "latest_version", return_value="1.1.0"), patch.object(u, "metadata", side_effect=error):
                 with self.assertRaises(type(error)):
                     u.candidate(self.path, info())

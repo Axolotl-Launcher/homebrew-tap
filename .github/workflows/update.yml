@@ -11,8 +11,7 @@ on:
       - "Casks/**"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: update-casks
@@ -22,15 +21,19 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
 
 jobs:
-  update:
+  prepare:
+    name: Prepare and audit update
     if: github.repository == 'Axolotl-Launcher/homebrew-tap' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout trusted base
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Homebrew tap
@@ -51,10 +54,58 @@ jobs:
           HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: python3 -B scripts/update_casks.py update
 
-      - name: Save expected PR contents
+      - name: Audit proposed contents
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
-          python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"
+          set -euo pipefail
+          for file in Casks/*.rb; do
+            token="$(basename "$file" .rb)"
+            ruby -c "$file"
+            brew style --cask "Axolotl-Launcher/tap/$token"
+            brew audit --cask --strict --online "Axolotl-Launcher/tap/$token"
+          done
+
+      - name: Export audited proposal
+        run: |
+          python3 -B scripts/update_casks.py export --proposal "$RUNNER_TEMP/cask-proposal"
+
+      - name: Upload audited data
+        uses: actions/upload-artifact@v7
+        with:
+          name: cask-proposal-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cask-proposal
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish verified update
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download audited data
+        uses: actions/download-artifact@v8
+        with:
+          name: cask-proposal-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cask-proposal
+
+      # This job only handles data and Git operations; it never evaluates Cask Ruby.
+      - name: Apply audited proposal
+        run: |
+          python3 -B scripts/update_casks.py apply --proposal "$RUNNER_TEMP/cask-proposal"
           cp scripts/update_casks.py "$RUNNER_TEMP/verify-cask-update.py"
+          cp "$RUNNER_TEMP/cask-proposal/manifest.json" "$RUNNER_TEMP/cask-update.json"
 
       - name: Create Pull Request
         id: cpr
@@ -73,11 +124,11 @@ jobs:
           body: |
             Automated Cask updates and generated README application tables.
 
-            The update workflow validates the PR commit with Ruby syntax checks
-            and strict online Homebrew audits. Maintainers review and merge the PR.
-            Automatic merging is optional through AUTO_MERGE_UPDATES=true.
+            The proposed contents passed Ruby syntax, style and strict online
+            Homebrew audits in a read-only job. The publishing job verifies that
+            the actual PR matches those contents without evaluating Cask Ruby.
+            Maintainers review and merge the PR; automatic merging is optional.
 
-      # PR CI may not run automatically for GITHUB_TOKEN-created PRs; validate here.
       - name: Checkout update PR commit
         if: steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
         uses: actions/checkout@v7
@@ -86,36 +137,37 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate update PR
+      - name: Verify actual update PR
         if: steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
         env:
           GH_TOKEN: ${{ github.token }}
-          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          # Only the exact proposal from the dedicated update branch may be merged.
           gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --json baseRefName,headRefName,isCrossRepository |
-            jq -e --arg base "${{ github.event.repository.default_branch }}" '
+            jq -e --arg base "$BASE_BRANCH" '
               .baseRefName == $base and .headRefName == "automation/update-casks" and
               .isCrossRepository == false
             ' > /dev/null
           python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify \
             --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"
-          for file in Casks/*.rb; do
-            token="$(basename "$file" .rb)"
-            ruby -c "$file"
-            brew style --cask "Axolotl-Launcher/tap/$token"
-            brew audit --cask --strict --online "Axolotl-Launcher/tap/$token"
-          done
 
-      - name: Merge validated update PR
+      - name: Merge verified update PR
         if: vars.AUTO_MERGE_UPDATES == 'true' && steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
           PR_HEAD: ${{ steps.cpr.outputs.pull-request-head-sha }}
+          EXPECTED_BASE: ${{ github.sha }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          set -euo pipefail
+          current_base="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BASE_BRANCH" --jq .object.sha)"
+          if [[ "$current_base" != "$EXPECTED_BASE" ]]; then
+            echo "Default branch changed after preparation; leaving the PR for review."
+            exit 1
+          fi
           gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --squash --match-head-commit "$PR_HEAD"

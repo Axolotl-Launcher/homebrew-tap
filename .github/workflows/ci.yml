@@ -26,6 +26,7 @@ env:
 jobs:
   audit:
     runs-on: macos-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository

@@ -11,13 +11,23 @@
 - **Cask CI** 检查 Ruby 语法、Homebrew 审计和更新脚本测试。
 - **Update Casks** 每天在新加坡／中国时间 00:00、06:00、12:00、18:00 检查，也支持手动运行及 `main` 分支的 Cask 推送触发。GitHub 定时运行可能延迟。
 - 更新脚本通过 `livecheck` 发现正式版本，核对 GitHub Release、下载地址和 SHA256；拒绝草稿、预发布、仓库变化和校验值不匹配。
-- 更新通过 PR 提出，实际 PR 提交通过内容核对和严格在线审计后由维护者合并。无变化不创建 PR，验证失败不合并。
+- 只读任务准备并严格审计更新，再通过 artifact 交给写权限任务。发布任务只复制允许的 Cask／README 数据并核对实际 PR，不执行 Cask Ruby。无变化不创建 PR；验证失败时工作流不执行自动合并，人工合并是否被阻止由仓库规则决定。
 
 在 **Settings → Actions → General → Workflow permissions** 中允许 Actions 创建 PR。使用内置 `GITHUB_TOKEN`，无需额外密钥；它创建的 PR 可能不触发 PR CI，因此更新工作流会自行验证实际提交。
 
 如需验证后自动 squash 合并，可设置仓库 Actions 变量 `AUTO_MERGE_UPDATES=true`；默认不自动合并，也不会绕过分支保护。自动更新仅在 `Axolotl-Launcher/homebrew-tap` 运行，Fork 中的 CI 仍可运行。
 
 版本与校验值由 `Casks/axolotl-launcher.rb` 定义。脚本支持单一数字版本、单一 SHA256 和随版本变化的 GitHub Releases URL；遇到不支持的格式会保持原样并报告原因。发布或网络错误会中止更新。审计不代替实际运行测试。
+
+### 自动合并与运行边界
+
+启用自动合并前，由维护者为 `main` 配置必需状态检查并要求 PR 分支保持最新，同时确保检查对应实际 PR 头部提交。工作流会在合并前再检查基础分支是否变化，并用 `--match-head-commit` 锁定 PR 提交；这些检查不能代替 GitHub 的服务端分支保护。
+
+`GITHUB_TOKEN` 创建的 PR 可能没有独立 PR CI。必要时可手动对 `automation/update-casks` 分支运行 **Cask CI**；不要把默认分支上更新任务的成功状态当成 PR 头部的必需检查。未配置好这些规则时，保留默认的人工合并方式。
+
+子进程默认超时 600 秒；下载连接超时 20 秒、单次传输最多 300 秒、重试时间预算 480 秒，仍受子进程总时限约束。CI 和更新任务最多运行 20 分钟。
+
+CI 更新由 `concurrency` 串行化，各次运行使用独立检出目录。本地不要同时对同一副本启动多个更新器。普通异常、中断和 SIGTERM 会尝试恢复临时版本修改；强制终止或断电仍可能留下未提交的部分改动，重新运行前先检查文件差异。失败的准备任务不会进入发布任务。
 
 ### Homebrew 与工作流命令
 
@@ -39,14 +49,17 @@ CI 专用命令依赖 runner 提供的环境变量；`verify-cask-update.py` 是
 | Homebrew 格式 | `brew style --cask Axolotl-Launcher/tap/axolotl-launcher` | 检查注册 tap 中的 Cask |
 | 自动修正格式 | `brew style --fix --cask Axolotl-Launcher/tap/axolotl-launcher` | 修改注册 tap 副本中的 Cask，之后检查差异 |
 | 严格在线审计 | `brew audit --cask --strict --online Axolotl-Launcher/tap/axolotl-launcher` | 联网，可能下载并解包；不安装应用 |
-| 查看脚本参数 | `python3 -B scripts/update_casks.py --help` | 只读；列出 update、readme、snapshot、verify |
+| 查看脚本参数 | `python3 -B scripts/update_casks.py --help` | 只读；列出 update、readme、snapshot、verify、export、apply |
 | 重新生成应用表 | `python3 -B scripts/update_casks.py readme --root "$(brew --repository Axolotl-Launcher/tap)"` | 修改注册 tap 副本的 README；建议专用测试环境 |
 | 本地检查并更新 | `python3 -B scripts/update_casks.py update --root "$(brew --repository Axolotl-Launcher/tap)"` | 修改该副本的 Cask 和 README；需 gh 登录；不创建 PR |
+| 导出已审计提案 | `python3 -B scripts/update_casks.py export --proposal "$RUNNER_TEMP/cask-proposal"` | CI 只读任务；保存清单及更新文件供上传，不复制脚本 |
+| 应用提案数据 | `python3 -B scripts/update_casks.py apply --proposal "$RUNNER_TEMP/cask-proposal"` | CI 发布任务；核对基础提交、路径和内容，不执行 Cask Ruby |
 | 记录预期内容 | `python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"` | CI 专用；写入清单，供检出 PR 后比较 |
 | 验证实际 PR 内容 | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"` | CI 专用；使用从可信基础提交保存的脚本副本及清单 |
 | 查看运行记录 | `gh run list --repo Axolotl-Launcher/homebrew-tap --limit 10` | 只读；Fork 验证时将仓库换成自己的 Fork |
 | 查看失败日志 | `gh run view RUN_ID --repo Axolotl-Launcher/homebrew-tap --log-failed` | 只读；将 RUN_ID 替换为实际编号 |
 | 手动运行 CI | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | 需工作流运行权限，且文件已合并到 main |
+| 检查更新 PR 分支 | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref automation/update-casks` | 维护者操作；在更新 PR 的实际分支上运行 CI，不用 main 的结果代替 |
 | 手动检查更新 | `gh workflow run update.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | 维护者操作；可能创建更新 PR；开启自动合并时也可能合并 |
 | 启用自动合并 | `gh variable set AUTO_MERGE_UPDATES --body true --repo Axolotl-Launcher/homebrew-tap` | 需仓库变量管理权限；改变后续更新行为 |
 | 关闭自动合并 | `gh variable set AUTO_MERGE_UPDATES --body false --repo Axolotl-Launcher/homebrew-tap` | 维护者操作；之后保留 PR 等待人工合并 |
@@ -60,13 +73,23 @@ CI 专用命令依赖 runner 提供的环境变量；`verify-cask-update.py` 是
 - **Cask CI** runs Ruby syntax checks, Homebrew audits, and updater tests.
 - **Update Casks** runs four times daily at 00:00, 06:00, 12:00, and 18:00 (UTC+8), manually, and on Cask pushes to `main`. GitHub schedules may be delayed.
 - The updater uses `livecheck`, verifies stable GitHub release assets and SHA256 checksums, and rejects drafts, prereleases, repository changes, and checksum mismatches.
-- Updates are proposed through PRs. The actual PR commit is checked against the expected contents and audited online before maintainer review. No changes means no PR; failed validation prevents merging.
+- A read-only job prepares and audits updates, then passes an artifact to the publishing job. The write-enabled job copies only allowed Cask/README data and verifies the actual PR without evaluating Cask Ruby. No changes means no PR. Failed validation prevents this workflow from automatically merging; repository rules control manual merges.
 
 Allow Actions to create PRs under **Settings → Actions → General → Workflow permissions**. No extra secrets are needed. PRs created with `GITHUB_TOKEN` may not trigger PR CI, so the update workflow validates the actual commit itself.
 
 To enable automatic squash merging after validation, set the repository Actions variable `AUTO_MERGE_UPDATES=true`. Automatic merging is off by default and never bypasses branch protection. Updates run only in `Axolotl-Launcher/homebrew-tap`; CI can still run in forks.
 
 `Casks/axolotl-launcher.rb` defines the version and checksum. The updater supports one numeric version, one SHA256, and a version-dependent GitHub Releases URL. Unsupported formats remain unchanged with a warning; release or network errors abort the update. Audits do not replace runtime testing.
+
+### Automatic merging and execution limits
+
+Before enabling automatic merging, maintainers must configure required status checks for `main`, require PR branches to be up to date, and ensure checks are attached to the actual PR head commit. The workflow rechecks the base immediately before merging and pins the PR head with `--match-head-commit`; these checks do not replace server-side branch protection.
+
+PRs created with `GITHUB_TOKEN` may lack independent PR CI. When needed, manually run **Cask CI** on `automation/update-casks`. A successful update job on the default branch is not a required status check on the PR head. Keep manual merging as the default until the rules are configured.
+
+Subprocesses default to a 600-second timeout. Downloads use a 20-second connection timeout, a 300-second per-transfer limit and a 480-second retry budget, bounded by the subprocess deadline. CI and update jobs have a 20-minute limit.
+
+Workflow concurrency serializes updates and each run has an isolated checkout. Do not run multiple local updaters against the same checkout. Normal exceptions, interrupts and SIGTERM attempt to restore provisional edits; a hard kill or power loss can still leave partial uncommitted changes. Review the working tree before rerunning. A failed preparation job cannot proceed to publishing.
 
 ### Homebrew and workflow commands
 
@@ -88,14 +111,17 @@ CI-only commands depend on runner environment variables. `verify-cask-update.py`
 | Homebrew style | `brew style --cask Axolotl-Launcher/tap/axolotl-launcher` | Checks the Cask in the registered tap |
 | Fix Homebrew style | `brew style --fix --cask Axolotl-Launcher/tap/axolotl-launcher` | Modifies that checkout; review the diff afterward |
 | Strict online audit | `brew audit --cask --strict --online Axolotl-Launcher/tap/axolotl-launcher` | May download and extract assets without installing the app |
-| Updater help | `python3 -B scripts/update_casks.py --help` | Read-only; lists update, readme, snapshot, and verify |
+| Updater help | `python3 -B scripts/update_casks.py --help` | Read-only; lists update, readme, snapshot, verify, export, and apply |
 | Regenerate application tables | `python3 -B scripts/update_casks.py readme --root "$(brew --repository Axolotl-Launcher/tap)"` | Modifies the registered tap README; use a dedicated test environment |
 | Run updater locally | `python3 -B scripts/update_casks.py update --root "$(brew --repository Axolotl-Launcher/tap)"` | Modifies its Casks and README; requires gh login; creates no PR |
+| Export audited proposal | `python3 -B scripts/update_casks.py export --proposal "$RUNNER_TEMP/cask-proposal"` | Read-only CI job; exports the manifest and changed files, not scripts |
+| Apply proposal data | `python3 -B scripts/update_casks.py apply --proposal "$RUNNER_TEMP/cask-proposal"` | Publishing job; checks base, paths and contents without evaluating Cask Ruby |
 | Snapshot expected contents | `python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"` | CI only; writes the manifest used after checking out a PR |
 | Verify actual PR contents | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"` | CI only; uses the verifier and manifest saved from the trusted base checkout |
 | List workflow runs | `gh run list --repo Axolotl-Launcher/homebrew-tap --limit 10` | Read-only; use your fork repository when checking fork CI |
 | Read failed-run logs | `gh run view RUN_ID --repo Axolotl-Launcher/homebrew-tap --log-failed` | Read-only; replace RUN_ID with the actual run ID |
 | Dispatch CI | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | Requires workflow permissions and the workflow on main |
+| Check the update PR branch | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref automation/update-casks` | Maintainer operation; runs CI on the actual update branch rather than main |
 | Dispatch update check | `gh workflow run update.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | Maintainer operation; may create a PR and merge it if automatic merging is enabled |
 | Enable automatic merging | `gh variable set AUTO_MERGE_UPDATES --body true --repo Axolotl-Launcher/homebrew-tap` | Requires repository variable permissions; changes subsequent update behavior |
 | Disable automatic merging | `gh variable set AUTO_MERGE_UPDATES --body false --repo Axolotl-Launcher/homebrew-tap` | Maintainer operation; subsequent PRs await manual merging |

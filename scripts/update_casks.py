@@ -6,6 +6,7 @@ import html
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import signal
 import tempfile
@@ -21,8 +22,9 @@ class Unsupported(ValueError):
     """A Cask requires manual updates rather than guessed release information."""
 
 
-def run(*args):
-    return subprocess.check_output(args, text=True)
+def run(*args, timeout=600):
+    # Argument vectors go directly to the process; shell escaping would alter them.
+    return subprocess.check_output(args, text=True, timeout=timeout)
 
 
 def metadata(token):
@@ -91,7 +93,8 @@ def checksum_for_release(url, repository, tag):
         raise ValueError(f"Expected exactly one official release asset: {url}")
     with tempfile.TemporaryDirectory(prefix="cask-download-") as directory:
         archive = Path(directory) / "asset"
-        run("curl", "--fail", "--location", "--retry", "3", "--proto", "=https",
+        run("curl", "--fail", "--location", "--retry", "3",
+            "--connect-timeout", "20", "--max-time", "300", "--retry-max-time", "480", "--proto", "=https",
             "--proto-redir", "=https", "--output", str(archive), url)
         checksum = file_hash(archive)
     digest = assets[0].get("digest")
@@ -216,6 +219,48 @@ def verify(root, manifest):
     print("PR files and contents match the expected update")
 
 
+
+def export_proposal(root, proposal):
+    proposal.mkdir(parents=True)
+    manifest = proposal / "manifest.json"
+    snapshot(root, manifest)
+    expected = json.loads(manifest.read_text())
+    for name in expected["changes"]:
+        target = proposal / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / name, target)
+
+
+def apply_proposal(root, proposal):
+    """Copy only audited data into a trusted checkout, without loading Cask Ruby."""
+    if proposal.is_symlink() or any(path.is_symlink() for path in proposal.rglob("*")):
+        raise ValueError("Proposal must not contain symlinks")
+    expected = json.loads((proposal / "manifest.json").read_text())
+    if run("git", "-C", str(root), "rev-parse", "HEAD").strip() != expected["base"]:
+        raise ValueError("Proposal base differs from the publishing checkout")
+    changes = expected["changes"]
+    current = tracked_content(root)
+    allowed = {name for name in current if name == "README.md" or re.fullmatch(r"Casks/[a-z0-9][a-z0-9-]*\.rb", name)}
+    if not isinstance(changes, list) or len(changes) != len(set(changes)) or not set(changes) <= allowed:
+        raise ValueError("Proposal contains unexpected changed files")
+    actual = {path.relative_to(proposal).as_posix() for path in proposal.rglob("*") if path.is_file()}
+    if actual != set(changes) | {"manifest.json"}:
+        raise ValueError("Proposal contains unexpected artifact files")
+    if set(current) != set(expected["files"]) or any(
+        value != expected["files"][name] for name, value in current.items() if name not in changes
+    ):
+        raise ValueError("Proposal changes files outside the allowed update")
+    for name in changes:
+        path = proposal / name
+        if file_hash(path) != expected["files"][name][0] or current[name][1] != expected["files"][name][1]:
+            raise ValueError(f"Proposal content or mode differs from the audit: {name}")
+    for name in changes:
+        (root / name).write_bytes((proposal / name).read_bytes())
+    if tracked_content(root) != expected["files"]:
+        raise ValueError("Applied proposal differs from the audited contents")
+    print("Audited proposal applied without evaluating Cask Ruby")
+
+
 def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
 
@@ -224,12 +269,17 @@ def main():
     # SIGTERM must unwind the temporary version edit, just like Ctrl-C.
     signal.signal(signal.SIGTERM, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("update", "readme", "snapshot", "verify"))
+    parser.add_argument("command", choices=("update", "readme", "snapshot", "verify", "export", "apply"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--proposal", type=Path)
     args = parser.parse_args()
     if args.command in ("update", "readme"):
         update(args.root, readme_only=args.command == "readme")
+    elif args.command in ("export", "apply"):
+        if args.proposal is None:
+            parser.error("--proposal is required")
+        (export_proposal if args.command == "export" else apply_proposal)(args.root, args.proposal)
     else:
         if args.manifest is None:
             parser.error("--manifest is required")
