@@ -1,0 +1,246 @@
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SPEC = importlib.util.spec_from_file_location("updater", Path(__file__).resolve().parents[1] / "scripts/update_casks.py")
+u = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(u)
+
+SOURCE = '''cask "sample" do
+  version "1.0.0"
+  sha256 "AAAAAAAA"
+  url "https://github.com/example/sample/releases/download/v#{version}/sample-#{version}.dmg"
+  name "Sample"
+  desc "Example application"
+  homepage "https://github.com/example/sample"
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+end
+'''.replace("AAAAAAAA", "a" * 64)
+README = "Before\n<!-- casks:zh:start -->\nold\n<!-- casks:zh:end -->\nMiddle\n<!-- casks:en:start -->\nold\n<!-- casks:en:end -->\nAfter\n"
+
+
+def info(token="sample", version="1.0.0", prefix="v"):
+    return {"token": token, "version": version, "sha256": "a" * 64,
+            "url": f"https://github.com/example/{token}/releases/download/{prefix}{version}/{token}-{version}.dmg",
+            "name": [token], "desc": "Example application", "homepage": f"https://github.com/example/{token}"}
+
+
+class UpdaterTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "Casks").mkdir()
+        self.path = self.root / "Casks/sample.rb"
+        self.path.write_text(SOURCE)
+        (self.root / "README.md").write_text(README)
+
+    def test_release_url_formats(self):
+        for tag in ("1.2.3", "v1.2.3", "release-1.2.3"):
+            url = f"https://github.com/example/sample/releases/download/{tag}/sample.dmg"
+            self.assertEqual(u.release_url(url), ("example/sample", tag, "sample.dmg"))
+        self.assertEqual(u.release_url("https://github.com/example/sample/releases/download/v1.0/Some%20App.dmg")[2], "Some App.dmg")
+        for url in ("http://github.com/a/b/releases/download/v1/file", "https://github.com.evil/a/b/releases/download/v1/file",
+                    "https://example.com/a.dmg", "https://github.com/a/b/releases/latest/download/a.dmg",
+                    "https://github.com/a/b/releases/download/v1/a.dmg?token=secret"):
+            with self.subTest(url=url), self.assertRaises(u.Unsupported):
+                u.release_url(url)
+
+    def test_source_restrictions(self):
+        self.assertEqual(u.simple_source(SOURCE, info()), "1.0.0")
+        self.assertEqual(u.simple_source(SOURCE.replace("    url :url\n", ""), info()), "1.0.0")
+        examples = [SOURCE.replace('  version "1.0.0"', '  version "1.0.0,2"'),
+                    SOURCE.replace('  version "1.0.0"', '  version :latest'),
+                    SOURCE.replace('  version "1.0.0"', '  on_arm do\n    version "1.0.0"\n  end'),
+                    SOURCE.replace('  livecheck do', '  language "en" do'),
+                    SOURCE.replace('  livecheck do', '  if OS.mac?\n  livecheck do'),
+                    SOURCE.replace('#{version}', '#{arch}'),
+                    SOURCE + '\n  sha256 "' + 'b' * 64 + '"\n']
+        for source in examples:
+            with self.subTest(source=source), self.assertRaises(u.Unsupported):
+                u.simple_source(source, info())
+
+    def test_livecheck_result(self):
+        def data(latest, outdated):
+            return json.dumps([{"cask": "sample", "version": {"latest": latest, "outdated": outdated}}])
+        for latest, outdated, expected in [("1.0.0", False, None), ("1.1.0", True, "1.1.0")]:
+            with patch.object(u, "run", return_value=data(latest, outdated)):
+                self.assertEqual(u.latest_version("sample", "1.0.0"), expected)
+        for value in ("[]", data("1.1.0", "true"), data("0.9.0", True), data("1.0.0", True)):
+            with patch.object(u, "run", return_value=value), self.assertRaises(ValueError):
+                u.latest_version("sample", "1.0.0")
+        with patch.object(u, "run", return_value=data("1.1.0-beta", True)), self.assertRaises(u.Unsupported):
+            u.latest_version("sample", "1.0.0")
+
+    def test_candidate_updates_and_restores(self):
+        new_info = info(version="1.1.0", prefix="release-")
+        with patch.object(u, "latest_version", return_value="1.1.0"), patch.object(u, "metadata", return_value=new_info), patch.object(u, "checksum_for_release", return_value="b" * 64) as download:
+            result = u.candidate(self.path, info())
+        self.assertIn('version "1.1.0"', result)
+        self.assertIn('sha256 "' + 'b' * 64 + '"', result)
+        self.assertEqual(self.path.read_text(), SOURCE)
+        download.assert_called_once_with(new_info["url"], "example/sample", "release-1.1.0")
+
+    def test_existing_cask_release_patterns(self):
+        root = Path(__file__).resolve().parents[1]
+        for original in sorted((root / "Casks").glob("*.rb")):
+            source = original.read_text()
+            current = u.VERSION.search(source)[1]
+            checksum = u.SHA256.search(source)[1]
+            url_template = next(line.strip()[5:-1] for line in source.splitlines() if line.startswith('  url "'))
+            old = info(original.stem, current)
+            old.update(sha256=checksum, url=url_template.replace("#{version}", current))
+            new = dict(old, version="9.9.9", url=url_template.replace("#{version}", "9.9.9"))
+            path = self.root / "Casks" / original.name
+            path.write_text(source)
+            with self.subTest(token=original.stem), patch.object(u, "latest_version", return_value="9.9.9"), patch.object(u, "metadata", return_value=new), patch.object(u, "checksum_for_release", return_value="b" * 64) as download:
+                proposal = u.candidate(path, old)
+                self.assertIn('version "9.9.9"', proposal)
+                self.assertEqual(source, path.read_text())
+                repository, tag, _ = u.release_url(new["url"])
+                download.assert_called_once_with(new["url"], repository, tag)
+
+    def test_parse_error_and_interrupt_restore_original(self):
+        for error in (RuntimeError("parse failed"), KeyboardInterrupt(), SystemExit(143)):
+            with patch.object(u, "latest_version", return_value="1.1.0"), patch.object(u, "metadata", side_effect=error):
+                with self.assertRaises(type(error)):
+                    u.candidate(self.path, info())
+            self.assertEqual(self.path.read_text(), SOURCE)
+
+    def test_fixed_url_and_repository_change(self):
+        fixed = info(version="1.1.0")
+        fixed["url"] = info()["url"]
+        changed = info(version="1.1.0")
+        changed["url"] = changed["url"].replace("example/sample", "other/sample")
+        for metadata, error in [(fixed, u.Unsupported), (changed, ValueError)]:
+            with patch.object(u, "latest_version", return_value="1.1.0"), patch.object(u, "metadata", return_value=metadata), patch.object(u, "checksum_for_release") as download:
+                with self.assertRaises(error):
+                    u.candidate(self.path, info())
+                download.assert_not_called()
+            self.assertEqual(self.path.read_text(), SOURCE)
+
+    def test_download_release_guards(self):
+        url = info()["url"]
+        release = {"tag_name": "v1.0.0", "draft": False, "prerelease": False,
+                   "assets": [{"browser_download_url": url}]}
+        def fake_run(*args):
+            if args[0] == "gh":
+                return json.dumps(current)
+            if args[0] == "curl":
+                Path(args[args.index("--output") + 1]).write_bytes(b"official asset")
+                return ""
+            raise AssertionError(args)
+        current = copy.deepcopy(release)
+        with patch.object(u, "run", side_effect=fake_run):
+            checksum = u.checksum_for_release(url, "example/sample", "v1.0.0")
+            current["assets"][0]["digest"] = "sha256:" + checksum
+            self.assertEqual(u.checksum_for_release(url, "example/sample", "v1.0.0"), checksum)
+            current["assets"][0]["digest"] = "sha256:wrong"
+            with self.assertRaises(ValueError):
+                u.checksum_for_release(url, "example/sample", "v1.0.0")
+            for invalid in ({"draft": True}, {"prerelease": True}, {"tag_name": "wrong"}, {"assets": []}, {"assets": release["assets"] * 2}):
+                current = dict(release, **invalid)
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    u.checksum_for_release(url, "example/sample", "v1.0.0")
+        current = copy.deepcopy(release)
+        def failed_download(*args):
+            if args[0] == "gh":
+                return json.dumps(current)
+            raise subprocess.CalledProcessError(22, "curl")
+        with patch.object(u, "run", side_effect=failed_download), self.assertRaises(subprocess.CalledProcessError):
+            u.checksum_for_release(url, "example/sample", "v1.0.0")
+        with patch.object(u, "run", side_effect=subprocess.CalledProcessError(1, "gh")), self.assertRaises(subprocess.CalledProcessError):
+            u.checksum_for_release(url, "example/sample", "v1.0.0")
+
+    def test_readme_stable_escaped_preserves_prose(self):
+        sample = info()
+        sample.update(name=["A [name] | `x`"], desc="Line\none | two <b>", homepage="https://example.com/a(b)")
+        result = u.readme_tables(README, {"sample": sample, "aaa": info("aaa")})
+        self.assertEqual(result, u.readme_tables(result, {"sample": sample, "aaa": info("aaa")}))
+        self.assertTrue(result.startswith("Before\n"))
+        self.assertTrue(result.endswith("\nAfter\n"))
+        self.assertIn("\nMiddle\n", result)
+        self.assertIn(r"A \[name\] \| \`x\`", result)
+        self.assertIn("a%28b%29", result)
+        self.assertLess(result.index(f"{u.TAP}/aaa"), result.index(f"{u.TAP}/sample"))
+        with self.assertRaises(ValueError):
+            u.readme_tables("No markers", {"sample": sample})
+
+    def test_all_current_and_fourth_cask(self):
+        original_files = {}
+        for token in ("axolotl-launcher", "example-one", "example-two", "sample"):
+            path = self.root / f"Casks/{token}.rb"
+            path.write_text(SOURCE.replace('cask "sample"', f'cask "{token}"'))
+            original_files[path] = path.read_text()
+        with patch.object(u, "metadata", side_effect=lambda token: info(token)), patch.object(u, "latest_version", return_value=None):
+            u.update(self.root)
+            first = (self.root / "README.md").read_text()
+            u.update(self.root)
+            self.assertEqual(first, (self.root / "README.md").read_text())
+        for path, text in original_files.items():
+            self.assertEqual(text, path.read_text())
+            self.assertIn(f"{u.TAP}/{path.stem}", first)
+
+    def test_failure_leaves_entire_proposal_unchanged(self):
+        second = self.root / "Casks/second.rb"
+        second.write_text(SOURCE)
+        with patch.object(u, "metadata", side_effect=lambda token: info(token)), patch.object(u, "candidate", side_effect=[SOURCE.replace("1.0.0", "1.1.0"), RuntimeError("network")]):
+            with self.assertRaises(RuntimeError):
+                u.update(self.root)
+        self.assertEqual(SOURCE, self.path.read_text())
+        self.assertEqual(SOURCE, second.read_text())
+        self.assertEqual(README, (self.root / "README.md").read_text())
+
+    def test_unsupported_skipped_and_readme_only(self):
+        with patch.object(u, "metadata", return_value=info()), patch.object(u, "candidate", side_effect=u.Unsupported("complex")), patch("builtins.print"):
+            u.update(self.root)
+        self.assertEqual(SOURCE, self.path.read_text())
+        with patch.object(u, "metadata", return_value=info()), patch.object(u, "candidate") as candidate:
+            u.update(self.root, readme_only=True)
+            candidate.assert_not_called()
+
+    def test_manifest_rejects_changed_added_deleted_files_and_modes(self):
+        manifest = self.root / "manifest.json"
+        names = "Casks/sample.rb\x00README.md\x00"
+        def fake_git(*args):
+            if "ls-files" in args:
+                return names
+            if "rev-parse" in args:
+                return "base\n"
+            return "README.md\x00"
+        with patch.object(u, "run", side_effect=fake_git):
+            u.snapshot(self.root, manifest)
+            u.verify(self.root, manifest)
+            self.path.write_text(SOURCE + "# injected\n")
+            with self.assertRaises(ValueError):
+                u.verify(self.root, manifest)
+            self.path.write_text(SOURCE)
+            self.path.chmod(0o755)
+            with self.assertRaises(ValueError):
+                u.verify(self.root, manifest)
+            self.path.chmod(0o644)
+            names += "injected.rb\x00"
+            (self.root / "injected.rb").write_text("injected")
+            with self.assertRaises(ValueError):
+                u.verify(self.root, manifest)
+            names = "README.md\x00"
+            with self.assertRaises(ValueError):
+                u.verify(self.root, manifest)
+            names = "Casks/sample.rb\x00README.md\x00"
+            expected = json.loads(manifest.read_text())
+            expected["changes"] = ["Casks/sample.rb"]
+            manifest.write_text(json.dumps(expected))
+            with self.assertRaises(ValueError):
+                u.verify(self.root, manifest)
+
+
+if __name__ == "__main__":
+    unittest.main()

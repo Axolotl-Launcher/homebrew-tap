@@ -1,0 +1,121 @@
+name: Update Casks
+
+on:
+  schedule:
+    # UTC 04:00 / 16:00 = Singapore / China 12:00 / 00:00.
+    - cron: "0 4,16 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Casks/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-casks
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  update:
+    if: github.repository == 'Axolotl-Launcher/homebrew-tap' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Set up Homebrew tap
+        run: |
+          mkdir -p "$(brew --repository)/Library/Taps/axolotl-launcher"
+          ln -s "$GITHUB_WORKSPACE" \
+            "$(brew --repository)/Library/Taps/axolotl-launcher/homebrew-tap"
+          if brew help trust > /dev/null 2>&1; then
+            brew trust --cask Axolotl-Launcher/tap/axolotl-launcher
+          fi
+
+      - name: Test updater
+        run: python3 -B -m unittest discover -s tests -v
+
+      - name: Update Casks and README
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/update_casks.py update
+
+      - name: Save expected PR contents
+        run: |
+          python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"
+          cp scripts/update_casks.py "$RUNNER_TEMP/verify-cask-update.py"
+
+      - name: Create Pull Request
+        id: cpr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          base: ${{ github.event.repository.default_branch }}
+          branch: automation/update-casks
+          delete-branch: true
+          add-paths: |
+            Casks/*.rb
+            README.md
+          commit-message: "chore: update casks"
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          title: "chore: update casks and application list"
+          body: |
+            Automated Cask updates and generated README application tables.
+
+            The update workflow validates the PR commit with Ruby syntax checks
+            and strict online Homebrew audits. Maintainers review and merge the PR.
+            Automatic merging is optional through AUTO_MERGE_UPDATES=true.
+
+      # PR CI may not run automatically for GITHUB_TOKEN-created PRs; validate here.
+      - name: Checkout update PR commit
+        if: steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.cpr.outputs.pull-request-head-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate update PR
+        if: steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
+        run: |
+          set -euo pipefail
+          # Only the exact proposal from the dedicated update branch may be merged.
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json baseRefName,headRefName,isCrossRepository |
+            jq -e --arg base "${{ github.event.repository.default_branch }}" '
+              .baseRefName == $base and .headRefName == "automation/update-casks" and
+              .isCrossRepository == false
+            ' > /dev/null
+          python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify \
+            --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"
+          for file in Casks/*.rb; do
+            token="$(basename "$file" .rb)"
+            ruby -c "$file"
+            brew style --cask "Axolotl-Launcher/tap/$token"
+            brew audit --cask --strict --online "Axolotl-Launcher/tap/$token"
+          done
+
+      - name: Merge validated update PR
+        if: vars.AUTO_MERGE_UPDATES == 'true' && steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
+          PR_HEAD: ${{ steps.cpr.outputs.pull-request-head-sha }}
+        run: |
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --squash --match-head-commit "$PR_HEAD"
