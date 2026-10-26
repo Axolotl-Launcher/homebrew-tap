@@ -33,6 +33,19 @@ brew install --cask --adopt Axolotl-Launcher/tap/axolotl-launcher
 
 接管前，用 `brew info --cask Axolotl-Launcher/tap/axolotl-launcher` 查看 Cask 版本，并与应用内显示的版本比较。本地版本较旧时先更新应用，较新时等待 tap 更新。`--adopt` 不会升级应用；版本一致仍无法接管时，请核对来源和安装位置，不要强制覆盖。
 
+### 信任检查
+
+本 tap 由 Axolotl 组织维护，但不属于 Homebrew 官方仓库。Cask 是可执行的 Ruby 安装定义，因此 Homebrew 要求明确授权后才能加载。
+
+上方完整的安装命令会自动授权该 Cask。如果先运行 `brew info`、`brew livecheck` 或 `brew audit`，遇到 `untrusted tap` 提示，请确认仓库来自 `Axolotl-Launcher/homebrew-tap`，再执行：
+
+```bash
+brew tap Axolotl-Launcher/tap
+brew trust --cask Axolotl-Launcher/tap/axolotl-launcher
+```
+
+然后重试原命令。这仅授权 Axolotl Cask，不会授权整个 tap 或安装应用；授权也不代表 Homebrew 对软件安全性的认证。详见 [Homebrew 信任机制](https://docs.brew.sh/Tap-Trust)。
+
 ### 应用
 
 <!-- casks:zh:start -->
@@ -69,6 +82,19 @@ brew install --cask --adopt Axolotl-Launcher/tap/axolotl-launcher
 ```
 
 Compare `brew info --cask Axolotl-Launcher/tap/axolotl-launcher` with the version shown in the app. Update an older app first, or wait for the tap to catch up with a newer app. Adoption does not upgrade the app. If matching versions still fail, check the source and installation location rather than forcing an overwrite.
+
+### Trust checks
+
+This tap is maintained by Axolotl, but is outside Homebrew's official repositories. Casks are executable Ruby installation definitions, so Homebrew requires permission to load them.
+
+The fully qualified installation command above grants permission for this Cask automatically. If you run `brew info`, `brew livecheck`, or `brew audit` first and see `untrusted tap`, verify that the repository is `Axolotl-Launcher/homebrew-tap`, then run:
+
+```bash
+brew tap Axolotl-Launcher/tap
+brew trust --cask Axolotl-Launcher/tap/axolotl-launcher
+```
+
+Retry the original command. This trusts only the Axolotl Cask, without trusting the entire tap or installing the app. Trust is not a Homebrew security certification. See [Homebrew Tap Trust](https://docs.brew.sh/Tap-Trust).
 
 ### Applications
 
