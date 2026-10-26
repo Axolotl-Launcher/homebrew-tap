@@ -2,8 +2,8 @@ name: Update Casks
 
 on:
   schedule:
-    # UTC 04:00 / 16:00 = Singapore / China 12:00 / 00:00.
-    - cron: "0 4,16 * * *"
+    # UTC 04:00 / 10:00 / 16:00 / 22:00 = UTC+8 12:00 / 18:00 / 00:00 / 06:00.
+    - cron: "0 4,10,16,22 * * *"
   workflow_dispatch:
   push:
     branches: [main]

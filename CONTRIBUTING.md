@@ -9,7 +9,7 @@
 ### 自动化
 
 - **Cask CI** 检查 Ruby 语法、Homebrew 审计和更新脚本测试。
-- **Update Casks** 每天检查两次，也支持手动运行及 `main` 分支的 Cask 推送触发。GitHub 定时运行可能延迟。
+- **Update Casks** 每天在新加坡／中国时间 00:00、06:00、12:00、18:00 检查，也支持手动运行及 `main` 分支的 Cask 推送触发。GitHub 定时运行可能延迟。
 - 更新脚本通过 `livecheck` 发现正式版本，核对 GitHub Release、下载地址和 SHA256；拒绝草稿、预发布、仓库变化和校验值不匹配。
 - 更新通过 PR 提出，实际 PR 提交通过内容核对和严格在线审计后由维护者合并。无变化不创建 PR，验证失败不合并。
 
@@ -19,22 +19,46 @@
 
 版本与校验值由 `Casks/axolotl-launcher.rb` 定义。脚本支持单一数字版本、单一 SHA256 和随版本变化的 GitHub Releases URL；遇到不支持的格式会保持原样并报告原因。发布或网络错误会中止更新。审计不代替实际运行测试。
 
-### 本地检查
+### Homebrew 与工作流命令
 
-```bash
-python3 -B -m unittest discover -s tests -v
-ruby -c Casks/axolotl-launcher.rb
-git diff --check
-```
+更新脚本需要 Python 3、Homebrew 和 GitHub CLI。除标注为 CI 专用的命令外，从仓库根目录运行；远端操作需相应权限。
 
-CI 会在独立 runner 中注册当前检出内容，并执行 Homebrew 格式和审计检查。本地开发仓库无需与日常使用的 tap 目录绑定。
+Homebrew 命令读取的是 `brew --repository Axolotl-Launcher/tap` 指向的副本，而不是自动读取当前开发目录。测试未合并的分支可使用 Fork CI 或隔离测试副本；不要将日常 tap 链接到开发目录。下面的 `readme` 和 `update` 命令用 `--root` 明确指定注册的 tap 副本，并会修改其中的文件，建议只在专用测试环境运行。
+
+CI 专用命令依赖 runner 提供的环境变量；`verify-cask-update.py` 是工作流在检出 PR 前保存的可信脚本副本，不是另一个仓库文件。安装、卸载及远端工作流命令具有实际副作用，不属于只读检查。
+
+| 用途 | 命令 | 前提与影响 |
+|---|---|---|
+| 更新脚本回归测试 | `python3 -B -m unittest discover -s tests -v` | 运行本仓库的更新防御和 PR 内容校验测试，不安装应用或创建 PR |
+| Actions 配置校验 | `actionlint -shellcheck='' .github/workflows/ci.yml .github/workflows/update.yml` | 需 Actionlint；检查本仓库两个工作流，关闭可选 ShellCheck |
+| 添加官方 tap | `brew tap Axolotl-Launcher/tap` | 克隆独立副本；未合并的代码不会出现在官方 main |
+| 查看 tap 路径 | `brew --repository Axolotl-Launcher/tap` | 只读；确认 Homebrew 实际读取哪个副本 |
+| 授权测试 Cask | `brew trust --cask Axolotl-Launcher/tap/axolotl-launcher` | 保存单 Cask 信任，不安装应用 |
+| 读取安装定义 | `brew info --cask --json=v2 Axolotl-Launcher/tap/axolotl-launcher` | 读取注册的 tap 副本，不一定是当前开发目录 |
+| 检查上游新版 | `brew livecheck --cask --json Axolotl-Launcher/tap/axolotl-launcher` | 联网，只读；脚本使用相同的 JSON 接口 |
+| Homebrew 格式 | `brew style --cask Axolotl-Launcher/tap/axolotl-launcher` | 检查注册 tap 中的 Cask |
+| 自动修正格式 | `brew style --fix --cask Axolotl-Launcher/tap/axolotl-launcher` | 修改注册 tap 副本中的 Cask，之后检查差异 |
+| 严格在线审计 | `brew audit --cask --strict --online Axolotl-Launcher/tap/axolotl-launcher` | 联网，可能下载并解包；不安装应用 |
+| 查看脚本参数 | `python3 -B scripts/update_casks.py --help` | 只读；列出 update、readme、snapshot、verify |
+| 重新生成应用表 | `python3 -B scripts/update_casks.py readme --root "$(brew --repository Axolotl-Launcher/tap)"` | 修改注册 tap 副本的 README；建议专用测试环境 |
+| 本地检查并更新 | `python3 -B scripts/update_casks.py update --root "$(brew --repository Axolotl-Launcher/tap)"` | 修改该副本的 Cask 和 README；需 gh 登录；不创建 PR |
+| 记录预期内容 | `python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"` | CI 专用；写入清单，供检出 PR 后比较 |
+| 验证实际 PR 内容 | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"` | CI 专用；使用从可信基础提交保存的脚本副本及清单 |
+| 查看运行记录 | `gh run list --repo Axolotl-Launcher/homebrew-tap --limit 10` | 只读；Fork 验证时将仓库换成自己的 Fork |
+| 查看失败日志 | `gh run view RUN_ID --repo Axolotl-Launcher/homebrew-tap --log-failed` | 只读；将 RUN_ID 替换为实际编号 |
+| 手动运行 CI | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | 需工作流运行权限，且文件已合并到 main |
+| 手动检查更新 | `gh workflow run update.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | 维护者操作；可能创建更新 PR；开启自动合并时也可能合并 |
+| 启用自动合并 | `gh variable set AUTO_MERGE_UPDATES --body true --repo Axolotl-Launcher/homebrew-tap` | 需仓库变量管理权限；改变后续更新行为 |
+| 关闭自动合并 | `gh variable set AUTO_MERGE_UPDATES --body false --repo Axolotl-Launcher/homebrew-tap` | 维护者操作；之后保留 PR 等待人工合并 |
+| 安装验证 | `brew install --cask Axolotl-Launcher/tap/axolotl-launcher` | 会安装应用；只在无现有安装的专用测试环境运行 |
+| 卸载验证 | `brew uninstall --cask Axolotl-Launcher/tap/axolotl-launcher` | 会删除应用；仅清理上一步的测试安装 |
 
 ## English
 
 ### Automation
 
 - **Cask CI** runs Ruby syntax checks, Homebrew audits, and updater tests.
-- **Update Casks** runs twice daily, manually, and on Cask pushes to `main`. GitHub schedules may be delayed.
+- **Update Casks** runs four times daily at 00:00, 06:00, 12:00, and 18:00 (UTC+8), manually, and on Cask pushes to `main`. GitHub schedules may be delayed.
 - The updater uses `livecheck`, verifies stable GitHub release assets and SHA256 checksums, and rejects drafts, prereleases, repository changes, and checksum mismatches.
 - Updates are proposed through PRs. The actual PR commit is checked against the expected contents and audited online before maintainer review. No changes means no PR; failed validation prevents merging.
 
@@ -44,12 +68,36 @@ To enable automatic squash merging after validation, set the repository Actions 
 
 `Casks/axolotl-launcher.rb` defines the version and checksum. The updater supports one numeric version, one SHA256, and a version-dependent GitHub Releases URL. Unsupported formats remain unchanged with a warning; release or network errors abort the update. Audits do not replace runtime testing.
 
-### Local checks
+### Homebrew and workflow commands
 
-```bash
-python3 -B -m unittest discover -s tests -v
-ruby -c Casks/axolotl-launcher.rb
-git diff --check
-```
+The updater requires Python 3, Homebrew, and GitHub CLI. Run commands from the repository root unless marked CI-only; remote operations require the appropriate permissions.
 
-CI registers the checked-out contents in an isolated runner for Homebrew style and audit checks. The development checkout does not need to be linked to the tap used for normal installations.
+Homebrew reads the checkout returned by `brew --repository Axolotl-Launcher/tap`, not automatically the current development directory. Test unmerged branches in fork CI or an isolated checkout; do not link the everyday tap to the development directory. The `readme` and `update` commands below explicitly target the registered tap with `--root` and modify files there, so use a dedicated test environment.
+
+CI-only commands depend on runner environment variables. `verify-cask-update.py` is a trusted copy saved before the PR checkout, not an additional repository file. Installation, uninstallation, and remote workflow commands have real effects and are not read-only checks.
+
+| Purpose | Command | Prerequisites and effects |
+|---|---|---|
+| Updater regression tests | `python3 -B -m unittest discover -s tests -v` | Tests this repository's update guards and PR verification without installing apps or creating PRs |
+| Actions configuration lint | `actionlint -shellcheck='' .github/workflows/ci.yml .github/workflows/update.yml` | Requires Actionlint; checks both workflows with optional ShellCheck disabled |
+| Add official tap | `brew tap Axolotl-Launcher/tap` | Clones a separate checkout; unmerged code is absent from official main |
+| Locate tap checkout | `brew --repository Axolotl-Launcher/tap` | Read-only; identifies the checkout Homebrew loads |
+| Trust the Cask | `brew trust --cask Axolotl-Launcher/tap/axolotl-launcher` | Stores item-level trust without installing the app |
+| Inspect Cask metadata | `brew info --cask --json=v2 Axolotl-Launcher/tap/axolotl-launcher` | Reads the registered tap, not necessarily the development checkout |
+| Check upstream version | `brew livecheck --cask --json Axolotl-Launcher/tap/axolotl-launcher` | Network access; read-only JSON used by the updater |
+| Homebrew style | `brew style --cask Axolotl-Launcher/tap/axolotl-launcher` | Checks the Cask in the registered tap |
+| Fix Homebrew style | `brew style --fix --cask Axolotl-Launcher/tap/axolotl-launcher` | Modifies that checkout; review the diff afterward |
+| Strict online audit | `brew audit --cask --strict --online Axolotl-Launcher/tap/axolotl-launcher` | May download and extract assets without installing the app |
+| Updater help | `python3 -B scripts/update_casks.py --help` | Read-only; lists update, readme, snapshot, and verify |
+| Regenerate application tables | `python3 -B scripts/update_casks.py readme --root "$(brew --repository Axolotl-Launcher/tap)"` | Modifies the registered tap README; use a dedicated test environment |
+| Run updater locally | `python3 -B scripts/update_casks.py update --root "$(brew --repository Axolotl-Launcher/tap)"` | Modifies its Casks and README; requires gh login; creates no PR |
+| Snapshot expected contents | `python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"` | CI only; writes the manifest used after checking out a PR |
+| Verify actual PR contents | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"` | CI only; uses the verifier and manifest saved from the trusted base checkout |
+| List workflow runs | `gh run list --repo Axolotl-Launcher/homebrew-tap --limit 10` | Read-only; use your fork repository when checking fork CI |
+| Read failed-run logs | `gh run view RUN_ID --repo Axolotl-Launcher/homebrew-tap --log-failed` | Read-only; replace RUN_ID with the actual run ID |
+| Dispatch CI | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | Requires workflow permissions and the workflow on main |
+| Dispatch update check | `gh workflow run update.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | Maintainer operation; may create a PR and merge it if automatic merging is enabled |
+| Enable automatic merging | `gh variable set AUTO_MERGE_UPDATES --body true --repo Axolotl-Launcher/homebrew-tap` | Requires repository variable permissions; changes subsequent update behavior |
+| Disable automatic merging | `gh variable set AUTO_MERGE_UPDATES --body false --repo Axolotl-Launcher/homebrew-tap` | Maintainer operation; subsequent PRs await manual merging |
+| Installation test | `brew install --cask Axolotl-Launcher/tap/axolotl-launcher` | Installs the app; use a dedicated environment without an existing installation |
+| Uninstallation test | `brew uninstall --cask Axolotl-Launcher/tap/axolotl-launcher` | Removes the app; only clean up the preceding test installation |
