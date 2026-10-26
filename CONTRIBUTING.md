@@ -23,11 +23,13 @@
 
 启用自动合并前，由维护者为 `main` 配置必需状态检查并要求 PR 分支保持最新，同时确保检查对应实际 PR 头部提交。工作流会在合并前再检查基础分支是否变化，并用 `--match-head-commit` 锁定 PR 提交；这些检查不能代替 GitHub 的服务端分支保护。
 
-`GITHUB_TOKEN` 创建的 PR 可能没有独立 PR CI。必要时可手动对 `automation/update-casks` 分支运行 **Cask CI**；不要把默认分支上更新任务的成功状态当成 PR 头部的必需检查。未配置好这些规则时，保留默认的人工合并方式。
+开启自动合并时，发布任务使用 `actions: write` 显式触发更新分支的只读 **Cask CI**，等待对应 PR 提交检查通过后再尝试合并。查找运行最多等待 2 分钟，CI 最多等待 10 分钟；失败或超时保留 PR。分支保护仍须由维护者配置；不要把默认分支的检查当成 PR 头部检查。人工合并模式下可手动触发 CI。
 
 子进程默认超时 600 秒；下载连接超时 20 秒、单次传输最多 300 秒、重试时间预算 480 秒，仍受子进程总时限约束。CI 和更新任务最多运行 20 分钟。
 
-CI 更新由 `concurrency` 串行化，各次运行使用独立检出目录。本地不要同时对同一副本启动多个更新器。普通异常、中断和 SIGTERM 会尝试恢复临时版本修改；强制终止或断电仍可能留下未提交的部分改动，重新运行前先检查文件差异。失败的准备任务不会进入发布任务。
+CI 更新由 `concurrency` 串行化，各次运行使用独立检出目录。本地不要同时对同一副本启动多个更新器。文件采用原子替换，普通异常、中断和 SIGTERM 会尝试回滚已写入的更改；发现期间发生的外部编辑会报错并保留它。该检查不能完全消除并发竞争，仍应使用独立副本。强制终止或断电可能留下部分改动，重新运行前检查差异。失败的准备任务不会进入发布任务。
+
+所有 Actions 固定到完整提交 SHA；升级时核对上游提交并重新运行 CI，不直接改回可变标签。
 
 ### Homebrew 与工作流命令
 
@@ -85,11 +87,13 @@ To enable automatic squash merging after validation, set the repository Actions 
 
 Before enabling automatic merging, maintainers must configure required status checks for `main`, require PR branches to be up to date, and ensure checks are attached to the actual PR head commit. The workflow rechecks the base immediately before merging and pins the PR head with `--match-head-commit`; these checks do not replace server-side branch protection.
 
-PRs created with `GITHUB_TOKEN` may lack independent PR CI. When needed, manually run **Cask CI** on `automation/update-casks`. A successful update job on the default branch is not a required status check on the PR head. Keep manual merging as the default until the rules are configured.
+When automatic merging is enabled, the publishing job uses `actions: write` to dispatch read-only **Cask CI** on the update branch and waits for the matching PR commit to pass before attempting a merge. Run discovery is limited to two minutes and CI waiting to ten minutes; failures or timeouts leave the PR open. Maintainers must still configure branch protection. Checks on the default branch are not checks on the PR head. In manual merging mode, CI can be dispatched manually.
 
 Subprocesses default to a 600-second timeout. Downloads use a 20-second connection timeout, a 300-second per-transfer limit and a 480-second retry budget, bounded by the subprocess deadline. CI and update jobs have a 20-minute limit.
 
-Workflow concurrency serializes updates and each run has an isolated checkout. Do not run multiple local updaters against the same checkout. Normal exceptions, interrupts and SIGTERM attempt to restore provisional edits; a hard kill or power loss can still leave partial uncommitted changes. Review the working tree before rerunning. A failed preparation job cannot proceed to publishing.
+Workflow concurrency serializes updates and each run has an isolated checkout. Do not run multiple local updaters against the same checkout. Files are replaced atomically; normal exceptions, interrupts and SIGTERM attempt to roll back completed writes. Detected external edits abort the update and are preserved. These checks cannot eliminate all concurrent races, so use isolated checkouts. A hard kill or power loss can still leave partial changes; review the working tree before rerunning. A failed preparation job cannot proceed to publishing.
+
+Actions are pinned to full commit SHAs. Verify upstream commits and rerun CI when updating pins; do not replace them with mutable tags.
 
 ### Homebrew and workflow commands
 

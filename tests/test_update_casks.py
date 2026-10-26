@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -180,6 +181,101 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn('sha256 "' + 'b' * 64 + '"', result)
         self.assertEqual(self.path.read_text(), SOURCE)
         download.assert_called_once_with(new_info["url"], "example/sample", "release-1.1.0")
+
+    def test_atomic_write_failure_keeps_original_and_mode(self):
+        self.path.chmod(0o640)
+        with patch.object(u.os, "replace", side_effect=OSError("disk failure")):
+            with self.assertRaises(OSError):
+                u.atomic_write(self.path, "replacement")
+        self.assertEqual(self.path.read_text(), SOURCE)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+        u.atomic_write(self.path, "replacement")
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
+
+    def test_final_write_failure_and_interrupt_roll_back(self):
+        readme = self.root / "README.md"
+        for error in (OSError("disk full"), KeyboardInterrupt(), SystemExit(143)):
+            real_write = u.atomic_write
+            def fail_second(path, content):
+                if path == readme:
+                    raise error
+                real_write(path, content)
+            with patch.object(u, "atomic_write", side_effect=fail_second):
+                with self.assertRaises(type(error)):
+                    u.write_changes({self.path: "new Cask", readme: "new README"},
+                                    {self.path: SOURCE, readme: README})
+            self.assertEqual(self.path.read_text(), SOURCE)
+            self.assertEqual(readme.read_text(), README)
+
+    def test_external_edits_are_preserved(self):
+        edited = SOURCE + "# maintainer edit\n"
+        def edit_during_resolution(_token):
+            self.path.write_text(edited)
+            return info(version="1.1.0")
+        with patch.object(u, "latest_version", return_value="1.1.0"), patch.object(u, "metadata", side_effect=edit_during_resolution):
+            with self.assertRaisesRegex(ValueError, "preserving"):
+                u.candidate(self.path, info())
+        self.assertEqual(self.path.read_text(), edited)
+        with self.assertRaisesRegex(ValueError, "preserving"):
+            u.write_changes({self.path: "new"}, {self.path: SOURCE})
+        self.assertEqual(self.path.read_text(), edited)
+        readme = self.root / "README.md"
+        real_write = u.atomic_write
+        def concurrent_write(path, content):
+            if path == readme:
+                self.path.write_text(edited)
+                raise OSError("disk full")
+            real_write(path, content)
+        self.path.write_text(SOURCE)
+        with patch.object(u, "atomic_write", side_effect=concurrent_write), self.assertRaises(OSError):
+            u.write_changes({self.path: "new", readme: "new"}, {self.path: SOURCE, readme: README})
+        self.assertEqual(self.path.read_text(), edited)
+
+    def test_commented_fields_are_not_rewritten(self):
+        commented = SOURCE.replace('  version "1.0.0"', '  # version "0.9.0"\n  version "1.0.0"')
+        commented = commented.replace('  sha256 "', '  # sha256 "' + 'c' * 64 + '"\n  sha256 "', 1)
+        self.path.write_text(commented)
+        with patch.object(u, "latest_version", return_value="1.1.0"), patch.object(u, "metadata", return_value=info(version="1.1.0")), patch.object(u, "checksum_for_release", return_value="b" * 64):
+            proposal = u.candidate(self.path, info())
+        self.assertIn('  # version "0.9.0"', proposal)
+        self.assertIn('  # sha256 "' + 'c' * 64 + '"', proposal)
+        self.assertIn('  version "1.1.0"', proposal)
+        self.assertIn('  sha256 "' + 'b' * 64 + '"', proposal)
+        self.assertEqual(self.path.read_text(), commented)
+
+    def test_dispatch_wait_requires_matching_successful_pr_commit(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/update.yml").read_text()
+        step = workflow.split("      - name: Run CI on verified update PR\n", 1)[1].split("      - name: Merge", 1)[0]
+        script = "\n".join(line[10:] for line in step.split("        run: |\n", 1)[1].splitlines())
+        bin_path = self.root / "bin"
+        bin_path.mkdir()
+        gh = bin_path / "gh"
+        gh.write_text('''#!/bin/sh
+case "$1 $2" in
+  "workflow run") exit 0 ;;
+  "run list") printf '[{"databaseId":123,"headSha":"%s","createdAt":"9999-01-01T00:00:00Z"}]' "$FAKE_HEAD" ;;
+  "run watch") echo "$*" >> "$WATCH_LOG"; exit "$WATCH_RESULT" ;;
+  "run view") printf '{"headSha":"%s","conclusion":"%s"}' "$FAKE_HEAD" "$FINAL_CONCLUSION" ;;
+  *) exit 99 ;;
+esac
+''')
+        gh.chmod(0o755)
+        for name, content in (("sleep", "#!/bin/sh\nexit 0\n"),
+                              ("timeout", '#!/bin/sh\nshift\nexec "$@"\n')):
+            command = bin_path / name
+            command.write_text(content)
+            command.chmod(0o755)
+        log = self.root / "watch.log"
+        environment = dict(os.environ, PATH=str(bin_path) + os.pathsep + os.environ["PATH"],
+                           GH_TOKEN="fake", PR_HEAD="verified", GITHUB_REPOSITORY="example/tap", WATCH_LOG=str(log))
+        for head, conclusion, final, success in (("verified", "0", "success", True), ("verified", "1", "failure", False),
+                                                 ("verified", "124", "timed_out", False), ("different", "0", "success", False),
+                                                 ("verified", "0", "skipped", False), ("verified", "0", "cancelled", False)):
+            log.unlink(missing_ok=True)
+            result = subprocess.run(["bash", "-c", script], env=dict(environment, FAKE_HEAD=head, WATCH_RESULT=conclusion, FINAL_CONCLUSION=final),
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode == 0, success, result.stderr)
+            self.assertEqual(log.exists(), head == "verified")
 
     def test_existing_cask_release_patterns(self):
         root = Path(__file__).resolve().parents[1]

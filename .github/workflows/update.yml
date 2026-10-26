@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout trusted base
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -71,7 +71,7 @@ jobs:
           python3 -B scripts/update_casks.py export --proposal "$RUNNER_TEMP/cask-proposal"
 
       - name: Upload audited data
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cask-proposal-${{ github.run_attempt }}
           path: ${{ runner.temp }}/cask-proposal
@@ -86,16 +86,17 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write # Dispatch read-only CI on the verified PR head.
 
     steps:
       - name: Checkout trusted base
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download audited data
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: cask-proposal-${{ github.run_attempt }}
           path: ${{ runner.temp }}/cask-proposal
@@ -109,7 +110,7 @@ jobs:
 
       - name: Create Pull Request
         id: cpr
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           base: ${{ github.event.repository.default_branch }}
           branch: automation/update-casks
@@ -131,7 +132,7 @@ jobs:
 
       - name: Checkout update PR commit
         if: steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ steps.cpr.outputs.pull-request-head-sha }}
           fetch-depth: 0
@@ -153,6 +154,35 @@ jobs:
             ' > /dev/null
           python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify \
             --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"
+
+      - name: Run CI on verified update PR
+        if: vars.AUTO_MERGE_UPDATES == 'true' && steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ steps.cpr.outputs.pull-request-head-sha }}
+        run: |
+          set -euo pipefail
+          dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-casks
+          run_id=""
+          for attempt in {1..24}; do
+            run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --branch automation/update-casks --event workflow_dispatch --limit 20 \
+              --json databaseId,headSha,createdAt | \
+              jq -r --arg head "$PR_HEAD" --arg since "$dispatched_at" \
+                '[.[] | select(.headSha == $head and .createdAt >= $since)][0].databaseId // empty')"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "No CI run found for the verified PR commit; leaving the PR open."
+            exit 1
+          fi
+          timeout 600 gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 10
+          gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json headSha,conclusion | \
+            jq -e --arg head "$PR_HEAD" ' .headSha == $head and .conclusion == "success"' > /dev/null
 
       - name: Merge verified update PR
         if: vars.AUTO_MERGE_UPDATES == 'true' && steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'

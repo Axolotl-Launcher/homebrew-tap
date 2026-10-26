@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import html
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -103,6 +104,43 @@ def checksum_for_release(url, repository, tag):
     return checksum
 
 
+def atomic_write(path, content):
+    """Replace one file without exposing truncated contents; preserve its mode."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content.encode("utf-8") if isinstance(content, str) else content)
+        temporary.chmod(path.stat().st_mode & 0o777)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def write_changes(changes, originals):
+    """Reject intervening edits and roll back completed writes on normal failure."""
+    changes = {path: value.encode("utf-8") if isinstance(value, str) else value for path, value in changes.items()}
+    originals = {path: value.encode("utf-8") if isinstance(value, str) else value for path, value in originals.items()}
+    for path, original in originals.items():
+        if path.read_bytes() != original:
+            raise ValueError(f"File changed during update; preserving it: {path}")
+    written = []
+    try:
+        for path, content in changes.items():
+            if path.read_bytes() != originals[path]:
+                raise ValueError(f"File changed during update; preserving it: {path}")
+            if content != originals[path]:
+                atomic_write(path, content)
+                written.append(path)
+    except BaseException:
+        for path in reversed(written):
+            # Never undo an external edit made after our own replacement.
+            if path.read_bytes() == changes[path]:
+                atomic_write(path, originals[path])
+        raise
+
+
 def candidate(path, info):
     source = path.read_text()
     current = simple_source(source, info)
@@ -112,10 +150,12 @@ def candidate(path, info):
         return source
     provisional = VERSION.sub(lambda _: f'  version "{latest}"', source, count=1)
     try:
-        path.write_text(provisional)
+        atomic_write(path, provisional)
         resolved = metadata(path.stem)
     finally:
-        path.write_text(source)
+        if path.read_text() != provisional:
+            raise ValueError(f"Cask changed during version resolution; preserving it: {path}")
+        atomic_write(path, source)
     if resolved["version"] != latest:
         raise ValueError(f"Homebrew did not resolve the new version for {path.stem}")
     old_repo, _, _ = release_url(info["url"])
@@ -162,6 +202,8 @@ def update(root, readme_only=False):
     if not paths:
         raise ValueError("No Casks found")
     changes, casks = {}, {}
+    readme = root / "README.md"
+    originals = {path: path.read_text() for path in [*paths, readme]}
     for path in paths:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", path.stem) or path.is_symlink():
             raise ValueError(f"Invalid Cask path: {path}")
@@ -172,12 +214,8 @@ def update(root, readme_only=False):
                 changes[path] = candidate(path, info)
             except Unsupported as error:
                 print(f"::warning::{path.stem}: {error}; leaving Cask unchanged")
-    readme = root / "README.md"
-    changes[readme] = readme_tables(readme.read_text(), casks)
-    # Nothing is permanently changed until all supported updates have been checked.
-    for path, content in changes.items():
-        if path.read_text() != content:
-            path.write_text(content)
+    changes[readme] = readme_tables(originals[readme], casks)
+    write_changes(changes, originals)
 
 
 def file_hash(path):
@@ -254,8 +292,8 @@ def apply_proposal(root, proposal):
         path = proposal / name
         if file_hash(path) != expected["files"][name][0] or current[name][1] != expected["files"][name][1]:
             raise ValueError(f"Proposal content or mode differs from the audit: {name}")
-    for name in changes:
-        (root / name).write_bytes((proposal / name).read_bytes())
+    changes_by_path = {root / name: (proposal / name).read_bytes() for name in changes}
+    write_changes(changes_by_path, {path: path.read_bytes() for path in changes_by_path})
     if tracked_content(root) != expected["files"]:
         raise ValueError("Applied proposal differs from the audited contents")
     print("Audited proposal applied without evaluating Cask Ruby")
