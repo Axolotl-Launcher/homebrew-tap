@@ -45,9 +45,6 @@ jobs:
             brew trust --cask Axolotl-Launcher/tap/axolotl-launcher
           fi
 
-      - name: Test updater
-        run: python3 -B -m unittest discover -s tests -v
-
       - name: Update Casks and README
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,7 +103,6 @@ jobs:
         run: |
           python3 -B scripts/update_casks.py apply --proposal "$RUNNER_TEMP/cask-proposal"
           cp scripts/update_casks.py "$RUNNER_TEMP/verify-cask-update.py"
-          cp "$RUNNER_TEMP/cask-proposal/manifest.json" "$RUNNER_TEMP/cask-update.json"
 
       - name: Create Pull Request
         id: cpr
@@ -153,7 +149,7 @@ jobs:
               .isCrossRepository == false
             ' > /dev/null
           python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify \
-            --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"
+            --root "$GITHUB_WORKSPACE" --proposal "$RUNNER_TEMP/cask-proposal"
 
       - name: Run CI on verified update PR
         if: vars.AUTO_MERGE_UPDATES == 'true' && steps.cpr.outputs.pull-request-number != '' && steps.cpr.outputs.pull-request-operation != 'closed'

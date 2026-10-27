@@ -237,17 +237,17 @@ def tracked_content(root):
     return result
 
 
-def snapshot(root, destination):
+def snapshot(root):
     base = run("git", "-C", str(root), "rev-parse", "HEAD").strip()
     changed = run("git", "-C", str(root), "diff", "--name-only", "-z", base).rstrip("\x00")
     changes = sorted(changed.split("\x00")) if changed else []
     if any(name != "README.md" and not re.fullmatch(r"Casks/[^/]+\.rb", name) for name in changes):
         raise ValueError("Update contains unexpected changed files")
-    destination.write_text(json.dumps({"base": base, "changes": changes, "files": tracked_content(root)}))
+    return {"base": base, "changes": changes, "files": tracked_content(root)}
 
 
-def verify(root, manifest):
-    expected = json.loads(manifest.read_text())
+def verify(root, proposal):
+    expected = json.loads((proposal / "manifest.json").read_text())
     if tracked_content(root) != expected["files"]:
         raise ValueError("PR content differs from the validated update proposal")
     changed = run("git", "-C", str(root), "diff", "--name-only", "-z", expected["base"], "HEAD").rstrip("\x00")
@@ -257,12 +257,10 @@ def verify(root, manifest):
     print("PR files and contents match the expected update")
 
 
-
 def export_proposal(root, proposal):
     proposal.mkdir(parents=True)
-    manifest = proposal / "manifest.json"
-    snapshot(root, manifest)
-    expected = json.loads(manifest.read_text())
+    expected = snapshot(root)
+    (proposal / "manifest.json").write_text(json.dumps(expected))
     for name in expected["changes"]:
         target = proposal / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -307,21 +305,16 @@ def main():
     # SIGTERM must unwind the temporary version edit, just like Ctrl-C.
     signal.signal(signal.SIGTERM, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("update", "readme", "snapshot", "verify", "export", "apply"))
+    parser.add_argument("command", choices=("update", "readme", "export", "apply", "verify"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--proposal", type=Path)
     args = parser.parse_args()
     if args.command in ("update", "readme"):
         update(args.root, readme_only=args.command == "readme")
-    elif args.command in ("export", "apply"):
+    else:
         if args.proposal is None:
             parser.error("--proposal is required")
-        (export_proposal if args.command == "export" else apply_proposal)(args.root, args.proposal)
-    else:
-        if args.manifest is None:
-            parser.error("--manifest is required")
-        (snapshot if args.command == "snapshot" else verify)(args.root, args.manifest)
+        {"export": export_proposal, "apply": apply_proposal, "verify": verify}[args.command](args.root, args.proposal)
 
 
 if __name__ == "__main__":

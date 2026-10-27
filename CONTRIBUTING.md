@@ -51,13 +51,12 @@ CI 专用命令依赖 runner 提供的环境变量；`verify-cask-update.py` 是
 | Homebrew 格式 | `brew style --cask Axolotl-Launcher/tap/axolotl-launcher` | 检查注册 tap 中的 Cask |
 | 自动修正格式 | `brew style --fix --cask Axolotl-Launcher/tap/axolotl-launcher` | 修改注册 tap 副本中的 Cask，之后检查差异 |
 | 严格在线审计 | `brew audit --cask --strict --online Axolotl-Launcher/tap/axolotl-launcher` | 联网，可能下载并解包；不安装应用 |
-| 查看脚本参数 | `python3 -B scripts/update_casks.py --help` | 只读；列出 update、readme、snapshot、verify、export、apply |
+| 查看脚本参数 | `python3 -B scripts/update_casks.py --help` | 只读；列出 update、readme、export、apply、verify |
 | 重新生成应用表 | `python3 -B scripts/update_casks.py readme --root "$(brew --repository Axolotl-Launcher/tap)"` | 修改注册 tap 副本的 README；建议专用测试环境 |
 | 本地检查并更新 | `python3 -B scripts/update_casks.py update --root "$(brew --repository Axolotl-Launcher/tap)"` | 修改该副本的 Cask 和 README；需 gh 登录；不创建 PR |
 | 导出已审计提案 | `python3 -B scripts/update_casks.py export --proposal "$RUNNER_TEMP/cask-proposal"` | CI 只读任务；保存清单及更新文件供上传，不复制脚本 |
 | 应用提案数据 | `python3 -B scripts/update_casks.py apply --proposal "$RUNNER_TEMP/cask-proposal"` | CI 发布任务；核对基础提交、路径和内容，不执行 Cask Ruby |
-| 记录预期内容 | `python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"` | CI 专用；写入清单，供检出 PR 后比较 |
-| 验证实际 PR 内容 | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"` | CI 专用；使用从可信基础提交保存的脚本副本及清单 |
+| 验证实际 PR 内容 | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --proposal "$RUNNER_TEMP/cask-proposal"` | CI 专用；使用可信脚本副本，直接读取下载提案中的清单 |
 | 查看运行记录 | `gh run list --repo Axolotl-Launcher/homebrew-tap --limit 10` | 只读；Fork 验证时将仓库换成自己的 Fork |
 | 查看失败日志 | `gh run view RUN_ID --repo Axolotl-Launcher/homebrew-tap --log-failed` | 只读；将 RUN_ID 替换为实际编号 |
 | 手动运行 CI | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | 需工作流运行权限，且文件已合并到 main |
@@ -115,13 +114,12 @@ CI-only commands depend on runner environment variables. `verify-cask-update.py`
 | Homebrew style | `brew style --cask Axolotl-Launcher/tap/axolotl-launcher` | Checks the Cask in the registered tap |
 | Fix Homebrew style | `brew style --fix --cask Axolotl-Launcher/tap/axolotl-launcher` | Modifies that checkout; review the diff afterward |
 | Strict online audit | `brew audit --cask --strict --online Axolotl-Launcher/tap/axolotl-launcher` | May download and extract assets without installing the app |
-| Updater help | `python3 -B scripts/update_casks.py --help` | Read-only; lists update, readme, snapshot, verify, export, and apply |
+| Updater help | `python3 -B scripts/update_casks.py --help` | Read-only; lists update, readme, export, apply, and verify |
 | Regenerate application tables | `python3 -B scripts/update_casks.py readme --root "$(brew --repository Axolotl-Launcher/tap)"` | Modifies the registered tap README; use a dedicated test environment |
 | Run updater locally | `python3 -B scripts/update_casks.py update --root "$(brew --repository Axolotl-Launcher/tap)"` | Modifies its Casks and README; requires gh login; creates no PR |
 | Export audited proposal | `python3 -B scripts/update_casks.py export --proposal "$RUNNER_TEMP/cask-proposal"` | Read-only CI job; exports the manifest and changed files, not scripts |
 | Apply proposal data | `python3 -B scripts/update_casks.py apply --proposal "$RUNNER_TEMP/cask-proposal"` | Publishing job; checks base, paths and contents without evaluating Cask Ruby |
-| Snapshot expected contents | `python3 -B scripts/update_casks.py snapshot --manifest "$RUNNER_TEMP/cask-update.json"` | CI only; writes the manifest used after checking out a PR |
-| Verify actual PR contents | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --manifest "$RUNNER_TEMP/cask-update.json"` | CI only; uses the verifier and manifest saved from the trusted base checkout |
+| Verify actual PR contents | `python3 -B "$RUNNER_TEMP/verify-cask-update.py" verify --root "$GITHUB_WORKSPACE" --proposal "$RUNNER_TEMP/cask-proposal"` | CI only; uses the trusted verifier and the manifest in the downloaded proposal |
 | List workflow runs | `gh run list --repo Axolotl-Launcher/homebrew-tap --limit 10` | Read-only; use your fork repository when checking fork CI |
 | Read failed-run logs | `gh run view RUN_ID --repo Axolotl-Launcher/homebrew-tap --log-failed` | Read-only; replace RUN_ID with the actual run ID |
 | Dispatch CI | `gh workflow run ci.yml --repo Axolotl-Launcher/homebrew-tap --ref main` | Requires workflow permissions and the workflow on main |

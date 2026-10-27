@@ -82,7 +82,7 @@ class UpdaterTests(unittest.TestCase):
             u.apply_proposal(self.root, proposal)
             self.assertEqual(self.path.read_text(), new_source)
             self.assertEqual((self.root / "README.md").read_text(), README)
-            u.verify(self.root, proposal / "manifest.json")
+            u.verify(self.root, proposal)
 
     def test_empty_proposal_is_a_noop(self):
         proposal = self.root / "proposal"
@@ -405,29 +405,29 @@ esac
                 return "base\n"
             return "README.md\x00"
         with patch.object(u, "run", side_effect=fake_git):
-            u.snapshot(self.root, manifest)
-            u.verify(self.root, manifest)
+            manifest.write_text(json.dumps(u.snapshot(self.root)))
+            u.verify(self.root, manifest.parent)
             self.path.write_text(SOURCE + "# injected\n")
             with self.assertRaises(ValueError):
-                u.verify(self.root, manifest)
+                u.verify(self.root, manifest.parent)
             self.path.write_text(SOURCE)
             self.path.chmod(0o755)
             with self.assertRaises(ValueError):
-                u.verify(self.root, manifest)
+                u.verify(self.root, manifest.parent)
             self.path.chmod(0o644)
             names += "injected.rb\x00"
             (self.root / "injected.rb").write_text("injected")
             with self.assertRaises(ValueError):
-                u.verify(self.root, manifest)
+                u.verify(self.root, manifest.parent)
             names = "README.md\x00"
             with self.assertRaises(ValueError):
-                u.verify(self.root, manifest)
+                u.verify(self.root, manifest.parent)
             names = "Casks/sample.rb\x00README.md\x00"
             expected = json.loads(manifest.read_text())
             expected["changes"] = ["Casks/sample.rb"]
             manifest.write_text(json.dumps(expected))
             with self.assertRaises(ValueError):
-                u.verify(self.root, manifest)
+                u.verify(self.root, manifest.parent)
 
 
 if __name__ == "__main__":
