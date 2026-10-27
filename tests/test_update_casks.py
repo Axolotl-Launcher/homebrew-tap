@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("updater", Path(__file__).resolve().parents[1] / "scripts/update_casks.py")
+if SPEC is None or SPEC.loader is None:
+    raise ImportError("Cannot load scripts/update_casks.py for tests")
 u = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(u)
 
