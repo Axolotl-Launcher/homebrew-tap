@@ -25,7 +25,7 @@ brew update
 brew upgrade --cask Axolotl-Launcher/tap/axolotl-launcher
 ```
 
-也可使用 `brew upgrade` 更新全部由 Homebrew 管理的软件。
+也可使用 `brew upgrade` 更新全部由 Homebrew 管理的软件。应用支持自更新，保留 `auto_updates true` 标记；若旧版 Homebrew 或当前配置跳过了它，可运行 `brew upgrade --cask --greedy Axolotl-Launcher/tap/axolotl-launcher`，或用 `brew outdated --cask --greedy` 检查。
 
 如果应用由 DMG 手动安装、尚未由 Homebrew 管理，可以接管现有应用：
 
@@ -77,7 +77,7 @@ brew update
 brew upgrade --cask Axolotl-Launcher/tap/axolotl-launcher
 ```
 
-Use `brew upgrade` to update all software managed by Homebrew.
+Use `brew upgrade` to update all software managed by Homebrew. The app supports self-updating, so the Cask keeps `auto_updates true`. If an older Homebrew version or your configuration skips it, use `brew upgrade --cask --greedy Axolotl-Launcher/tap/axolotl-launcher`, or check with `brew outdated --cask --greedy`.
 
 For an app installed manually from a DMG and not yet managed by Homebrew:
 

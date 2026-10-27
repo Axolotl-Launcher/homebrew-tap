@@ -8,7 +8,7 @@
 
 ### 自动化
 
-- **Cask CI** 检查 Ruby 语法、Homebrew 审计和更新脚本测试。
+- **Cask CI** 在 `main` 推送、PR 和手动触发时检查 Ruby 语法、Homebrew 审计和更新脚本测试；功能分支推送不重复运行。
 - **Update Casks** 每天在新加坡／中国时间 00:00、06:00、12:00、18:00 检查，也支持手动运行及 `main` 分支的 Cask 推送触发。GitHub 定时运行可能延迟。
 - 更新脚本通过 `livecheck` 发现正式版本，核对 GitHub Release、下载地址和 SHA256；拒绝草稿、预发布、仓库变化和校验值不匹配。
 - 只读任务准备并严格审计更新，再通过 artifact 交给写权限任务。发布任务只复制允许的 Cask／README 数据并核对实际 PR，不执行 Cask Ruby。无变化不创建 PR；验证失败时工作流不执行自动合并，人工合并是否被阻止由仓库规则决定。
@@ -71,7 +71,7 @@ CI 专用命令依赖 runner 提供的环境变量；`verify-cask-update.py` 是
 
 ### Automation
 
-- **Cask CI** runs Ruby syntax checks, Homebrew audits, and updater tests.
+- **Cask CI** runs Ruby syntax checks, Homebrew audits, and updater tests on pushes to `main`, pull requests, and manual dispatches. Feature-branch pushes do not run duplicate checks.
 - **Update Casks** runs four times daily at 00:00, 06:00, 12:00, and 18:00 (UTC+8), manually, and on Cask pushes to `main`. GitHub schedules may be delayed.
 - The updater uses `livecheck`, verifies stable GitHub release assets and SHA256 checksums, and rejects drafts, prereleases, repository changes, and checksum mismatches.
 - A read-only job prepares and audits updates, then passes an artifact to the publishing job. The write-enabled job copies only allowed Cask/README data and verifies the actual PR without evaluating Cask Ruby. No changes means no PR. Failed validation prevents this workflow from automatically merging; repository rules control manual merges.
