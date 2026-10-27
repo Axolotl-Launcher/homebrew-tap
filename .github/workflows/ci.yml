@@ -2,6 +2,7 @@ name: Cask CI
 
 on:
   push:
+    branches: [main]
     paths:
       - "Casks/**"
       - "scripts/**"
