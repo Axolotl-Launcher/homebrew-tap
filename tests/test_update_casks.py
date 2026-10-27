@@ -86,6 +86,34 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual((self.root / "README.md").read_text(), README)
             u.verify(self.root, proposal)
 
+    def test_apply_rejects_edits_after_preflight_snapshot(self):
+        proposal, _ = self.make_proposal()
+        original_snapshot = u.tracked_content
+        edited = SOURCE + "# concurrent edit\n"
+        def snapshot_then_edit(root):
+            current = original_snapshot(root)
+            self.path.write_text(edited)
+            return current
+        with patch.object(u, "run", side_effect=self.proposal_git), patch.object(u, "tracked_content", side_effect=snapshot_then_edit):
+            with self.assertRaisesRegex(ValueError, "Files changed"):
+                u.apply_proposal(self.root, proposal)
+        self.assertEqual(self.path.read_text(), edited)
+
+    def test_apply_rolls_back_when_other_tracked_file_changes(self):
+        proposal, _ = self.make_proposal()
+        real_write = u.atomic_write
+        readme = self.root / "README.md"
+        edited_readme = README + "Maintainer edit\n"
+        def edit_after_write(path, content):
+            real_write(path, content)
+            if path == self.path:
+                readme.write_text(edited_readme)
+        with patch.object(u, "run", side_effect=self.proposal_git), patch.object(u, "atomic_write", side_effect=edit_after_write):
+            with self.assertRaisesRegex(ValueError, "Applied proposal differs"):
+                u.apply_proposal(self.root, proposal)
+        self.assertEqual(self.path.read_text(), SOURCE)
+        self.assertEqual(readme.read_text(), edited_readme)
+
     def test_empty_proposal_is_a_noop(self):
         proposal = self.root / "proposal"
         def fake_git(*args):

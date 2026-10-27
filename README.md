@@ -8,6 +8,8 @@
 
 [Axolotl Launcher](https://github.com/Axolotl-Launcher/Axolotl) 的官方 Homebrew tap。
 
+1.10.1 发布包声明最低 macOS 为 Intel 10.13、Apple Silicon 11.0；使用本 tap 还需满足 Homebrew 的系统要求。尚未验证旧系统运行兼容性。
+
 ### 安装与更新
 
 ```bash
@@ -51,12 +53,14 @@ brew trust --cask Axolotl-Launcher/tap/axolotl-launcher
 <!-- casks:zh:start -->
 | 应用 | 简介 | 安装命令 |
 |---|---|---|
-| [Axolotl Launcher](https://github.com/Axolotl-Launcher/Axolotl) | Minecraft launcher | `brew install --cask Axolotl-Launcher/tap/axolotl-launcher` |
+| [Axolotl Launcher](https://github.com/Axolotl-Launcher/Axolotl) | Free and open-source Minecraft launcher | `brew install --cask Axolotl-Launcher/tap/axolotl-launcher` |
 <!-- casks:zh:end -->
 
 ## English
 
 The official Homebrew tap for [Axolotl Launcher](https://github.com/Axolotl-Launcher/Axolotl).
+
+The 1.10.1 release declares macOS 10.13 for Intel and 11.0 for Apple Silicon. Homebrew's own system requirements also apply; runtime compatibility on older systems has not been tested.
 
 ### Installation and updates
 
@@ -101,5 +105,5 @@ Retry the original command. This trusts only the Axolotl Cask, without trusting 
 <!-- casks:en:start -->
 | Application | Description | Installation |
 |---|---|---|
-| [Axolotl Launcher](https://github.com/Axolotl-Launcher/Axolotl) | Minecraft launcher | `brew install --cask Axolotl-Launcher/tap/axolotl-launcher` |
+| [Axolotl Launcher](https://github.com/Axolotl-Launcher/Axolotl) | Free and open-source Minecraft launcher | `brew install --cask Axolotl-Launcher/tap/axolotl-launcher` |
 <!-- casks:en:end -->

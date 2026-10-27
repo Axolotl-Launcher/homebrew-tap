@@ -118,7 +118,7 @@ def atomic_write(path, content):
             temporary.unlink(missing_ok=True)
 
 
-def write_changes(changes, originals):
+def write_changes(changes, originals, validate=None):
     """Reject intervening edits and roll back completed writes on normal failure."""
     changes = {path: value.encode("utf-8") if isinstance(value, str) else value for path, value in changes.items()}
     originals = {path: value.encode("utf-8") if isinstance(value, str) else value for path, value in originals.items()}
@@ -133,6 +133,8 @@ def write_changes(changes, originals):
             if content != originals[path]:
                 atomic_write(path, content)
                 written.append(path)
+        if validate is not None:
+            validate()
     except BaseException:
         for path in reversed(written):
             # Never undo an external edit made after our own replacement.
@@ -276,6 +278,10 @@ def apply_proposal(root, proposal):
         raise ValueError("Proposal base differs from the publishing checkout")
     changes = expected["changes"]
     current = tracked_content(root)
+    originals = {root / name: (root / name).read_bytes() for name in current}
+    if any(hashlib.sha256(content).hexdigest() != current[path.relative_to(root).as_posix()][0]
+           for path, content in originals.items()):
+        raise ValueError("Files changed while reading the publishing checkout")
     allowed = {name for name in current if name == "README.md" or re.fullmatch(r"Casks/[a-z0-9][a-z0-9-]*\.rb", name)}
     if not isinstance(changes, list) or len(changes) != len(set(changes)) or not set(changes) <= allowed:
         raise ValueError("Proposal contains unexpected changed files")
@@ -291,9 +297,10 @@ def apply_proposal(root, proposal):
         if file_hash(path) != expected["files"][name][0] or current[name][1] != expected["files"][name][1]:
             raise ValueError(f"Proposal content or mode differs from the audit: {name}")
     changes_by_path = {root / name: (proposal / name).read_bytes() for name in changes}
-    write_changes(changes_by_path, {path: path.read_bytes() for path in changes_by_path})
-    if tracked_content(root) != expected["files"]:
-        raise ValueError("Applied proposal differs from the audited contents")
+    def validate_applied():
+        if tracked_content(root) != expected["files"]:
+            raise ValueError("Applied proposal differs from the audited contents")
+    write_changes(changes_by_path, originals, validate=validate_applied)
     print("Audited proposal applied without evaluating Cask Ruby")
 
 
