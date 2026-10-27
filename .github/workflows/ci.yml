@@ -1,0 +1,64 @@
+name: Cask CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Casks/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/update.yml"
+  pull_request:
+    paths:
+      - "Casks/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/update.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  audit:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Homebrew tap
+        run: |
+          mkdir -p "$(brew --repository)/Library/Taps/axolotl-launcher"
+          ln -s "$GITHUB_WORKSPACE" \
+            "$(brew --repository)/Library/Taps/axolotl-launcher/homebrew-tap"
+          if brew help trust > /dev/null 2>&1; then
+            brew trust --cask Axolotl-Launcher/tap/axolotl-launcher
+          fi
+
+      - name: Test updater
+        run: python3 -B -m unittest discover -s tests -v
+
+      - name: Validate Casks
+        run: |
+          set -euo pipefail
+
+          for cask in Casks/*.rb; do
+            token="$(basename "$cask" .rb)"
+
+            echo "::group::Checking $token"
+
+            ruby -c "$cask"
+            brew style --cask "Axolotl-Launcher/tap/$token"
+            brew audit --cask --strict "Axolotl-Launcher/tap/$token"
+
+            echo "::endgroup::"
+          done
