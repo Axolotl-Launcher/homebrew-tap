@@ -4,7 +4,7 @@ cask "axolotl-launcher" do
 
   url "https://github.com/Axolotl-Launcher/Axolotl/releases/download/v#{version}/Axolotl.Launcher_#{version}_universal.dmg"
   name "Axolotl Launcher"
-  desc "Minecraft launcher"
+  desc "Free and open-source Minecraft launcher"
   homepage "https://github.com/Axolotl-Launcher/Axolotl"
 
   livecheck do
@@ -13,7 +13,7 @@ cask "axolotl-launcher" do
   end
 
   auto_updates true
-  depends_on :macos
+  depends_on macos: ">= :ventura"
 
   app "Axolotl Launcher.app"
 end
