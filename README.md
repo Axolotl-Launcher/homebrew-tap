@@ -35,6 +35,24 @@ brew install --cask --adopt Axolotl-Launcher/tap/axolotl-launcher
 
 接管前，用 `brew info --cask Axolotl-Launcher/tap/axolotl-launcher` 查看 Cask 版本，并与应用内显示的版本比较。本地版本较旧时先更新应用，较新时等待 tap 更新。`--adopt` 不会升级应用；版本一致仍无法接管时，请核对来源和安装位置，不要强制覆盖。
 
+### 卸载
+
+普通卸载保留用户数据：
+
+```bash
+brew uninstall --cask axolotl-launcher
+```
+
+如需同时清理缓存、日志、偏好设置、窗口状态及 WebKit／cookies（包括相关登录状态）：
+
+```bash
+brew uninstall --cask --zap axolotl-launcher
+```
+
+`--zap` 仅清理上述应用辅助文件，可能重置相关登录状态；保留实例、存档、服务器、备份及启动器数据库，不会整体删除数据主目录或清理自定义数据位置。
+
+如需彻底清理，请在卸载前打开启动器的 **设置 → 存储与备份（Storage & backups）**，备份需要保留的内容，并通过文件／文件夹按钮定位数据。保持相关文件夹打开，退出启动器后，将确认不再需要的 Axolotl 数据移到废纸篓，再执行上述 `--zap` 命令。自定义位置也需自行确认；不要删除共享目录中的其他文件。该面板可清理缓存，但不是一键清除所有数据。
+
 ### 信任检查
 
 本 tap 由 Axolotl 组织维护，但不属于 Homebrew 官方仓库。Cask 是可执行的 Ruby 安装定义，因此 Homebrew 要求明确授权后才能加载。
@@ -86,6 +104,24 @@ brew install --cask --adopt Axolotl-Launcher/tap/axolotl-launcher
 ```
 
 Compare `brew info --cask Axolotl-Launcher/tap/axolotl-launcher` with the version shown in the app. Update an older app first, or wait for the tap to catch up with a newer app. Adoption does not upgrade the app. If matching versions still fail, check the source and installation location rather than forcing an overwrite.
+
+### Uninstallation
+
+Normal uninstallation preserves user data:
+
+```bash
+brew uninstall --cask axolotl-launcher
+```
+
+To also clear caches, logs, preferences, window state, and WebKit/cookies (including associated login state):
+
+```bash
+brew uninstall --cask --zap axolotl-launcher
+```
+
+`--zap` only removes the auxiliary files listed above and may reset associated login state. It preserves instances, saves, servers, backups, and the launcher database. It does not remove the entire data directory or clean custom data locations.
+
+For a full cleanup, open **Settings → Storage & backups** before uninstalling, back up anything you want to keep, and use the file/folder buttons to locate the data. Keep the relevant folders open, quit the launcher, move only unwanted Axolotl data to the Trash, then run the `--zap` command above. Check custom locations yourself and preserve unrelated files in shared directories. The panel can clear caches but does not provide a one-click removal of all data.
 
 ### Trust checks
 

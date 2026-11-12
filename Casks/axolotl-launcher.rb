@@ -17,4 +17,13 @@ cask "axolotl-launcher" do
   depends_on :macos
 
   app "Axolotl Launcher.app"
+
+  zap trash: [
+    "~/Library/Application Support/red.ghs.axolotl/app-window-state.json",
+    "~/Library/Application Support/red.ghs.axolotl/launcher_logs",
+    "~/Library/Caches/red.ghs.axolotl",
+    "~/Library/HTTPStorages/red.ghs.axolotl.binarycookies",
+    "~/Library/Preferences/red.ghs.axolotl.plist",
+    "~/Library/WebKit/red.ghs.axolotl",
+  ]
 end
