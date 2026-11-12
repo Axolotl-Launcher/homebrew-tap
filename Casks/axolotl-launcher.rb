@@ -18,7 +18,6 @@ cask "axolotl-launcher" do
 
   app "Axolotl Launcher.app"
 
-  # Preserve instances, saves, servers, backups, and the launcher database.
   zap trash: [
     "~/Library/Application Support/red.ghs.axolotl/app-window-state.json",
     "~/Library/Application Support/red.ghs.axolotl/launcher_logs",
